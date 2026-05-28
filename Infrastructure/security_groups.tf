@@ -60,8 +60,8 @@ resource "aws_security_group" "app_tier" {
   name        = "app-tier-sg"
   vpc_id      = aws_vpc.main.id
   ingress {
-    from_port       = 3000
-    to_port         = 3000
+    from_port       = 4000
+    to_port         = 4000
     protocol        = "tcp"
     security_groups = [aws_security_group.int_alb.id]
   }

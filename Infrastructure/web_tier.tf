@@ -37,8 +37,12 @@ resource "aws_lb_listener" "external" {
 # Web Tier Launch Template with integrated User Data for Nginx/React Proxy
 resource "aws_launch_template" "web" {
   name_prefix   = "web-template-"
-  image_id      = "ami-007855ac798b5175e" # Ubuntu 22.04 LTS AMI for us-east-1 (Change if using different region)
+  image_id      = data.aws_ami.amazon_linux_2023.id
   instance_type = "t3.micro"
+
+  iam_instance_profile {
+    arn = aws_iam_instance_profile.ec2_profile.arn
+  }
 
   network_interfaces {
     associate_public_ip_address = false
@@ -47,46 +51,49 @@ resource "aws_launch_template" "web" {
 
   user_data = base64encode(<<-EOF
               #!/bin/bash
-              sudo apt-get update -y
-              sudo apt-get install nginx -y
+              # 1. Update system and install basic utilities
+              sudo dnf update -y
+              sudo dnf install nginx git -y
 
-              # Configure Nginx as a reverse proxy for /api routing to Internal ALB
-              sudo cat << 'NNGINX' > /etc/nginx/sites-available/default
-              server {
-                  listen 80 default_server;
-                  listen [::]:80 default_server;
+              # 2. Install Node.js & npm (Required to compile the React application)
+              curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
+              sudo dnf install nodejs -y
 
-                  root /var/www/html;
-                  index index.html;
+              # 3. Clone your repository root
+              cd /home/ec2-user
+              git clone https://github.com/nerdusan/aws-three-tier-web-architecture-workshop.git aws-three-tier-web-architecture
+              
+              REPO_DIR="/home/ec2-user/aws-three-tier-web-architecture"
+              APP_CODE_DIR="$REPO_DIR/application-code"
 
-                  server_name _;
+              # 4. Navigate to the web-tier and dynamically compile the build folder
+              cd $APP_CODE_DIR/web-tier
+              npm install
+              npm run build  # This automatically generates the missing 'build/' folder!
 
-                  location / {
-                      try_files $uri $uri/ /index.html;
-                  }
+              # 5. Map the freshly compiled build to where your nginx.conf expects it
+              mkdir -p /home/ec2-user/web-tier
+              cp -r $APP_CODE_DIR/web-tier/build /home/ec2-user/web-tier/
 
-                  location /api/ {
-                      proxy_pass http://${aws_lb.internal.dns_name};
-                      proxy_http_version 1.1;
-                      proxy_set_header Upgrade $http_upgrade;
-                      proxy_set_header Connection 'upgrade';
-                      proxy_set_header Host $host;
-                      proxy_cache_bypass $http_upgrade;
-                  }
-              }
-              NNGINX
+              # 6. Dynamic Replace: Swap out the token in nginx.conf with the real Internal ALB DNS
+              sed -i "s|\[REPLACE-WITH-INTERNAL-LB-DNS\]|${aws_lb.internal.dns_name}|g" $APP_CODE_DIR/nginx.conf
 
-              # Dummy React build file placeholder
-              echo "<h1>React App (Served via Nginx)</h1><p>API requests routed to internal tier.</p>" | sudo tee /var/www/html/index.html
+              # 7. Overwrite system configuration with your newly updated nginx.conf
+              sudo cp $APP_CODE_DIR/nginx.conf /etc/nginx/nginx.conf
 
-              sudo systemctl restart nginx
+              # 8. Repair file permissions for Amazon Linux Nginx worker compatibility
+              sudo chmod 755 /home/ec2-user
+              sudo chmod -R 755 /home/ec2-user/web-tier
+
+              # 9. Start Nginx ONLY after the build is 100% finished
+              sudo systemctl daemon-reload
               sudo systemctl enable nginx
+              sudo systemctl restart nginx
               EOF
   )
 }
-
-# Web Tier Autoscaling Group
 resource "aws_autoscaling_group" "web" {
+  name                = "web-asg"
   desired_capacity    = 2
   max_size            = 4
   min_size            = 2

@@ -1,6 +1,6 @@
 # Internal Load Balancer
 resource "aws_lb" "internal" {
-  name               = "internal-alb"
+  name               = "app-internal-alb"
   internal           = true
   load_balancer_type = "application"
   security_groups    = [aws_security_group.int_alb.id]
@@ -8,18 +8,21 @@ resource "aws_lb" "internal" {
 }
 
 resource "aws_lb_target_group" "app" {
-  name     = "app-tg"
-  port     = 3000
+  name_prefix     = "app-"
+  port     = 4000
   protocol = "HTTP"
   vpc_id   = aws_vpc.main.id
 
   health_check {
-    path                = "/health"
+    path                = "/healthcheck"
     healthy_threshold   = 3
     unhealthy_threshold = 3
     timeout             = 5
     interval            = 30
     matcher             = "200"
+  }
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
@@ -37,8 +40,12 @@ resource "aws_lb_listener" "internal" {
 # App Tier Launch Template with fully integrated User Data for Node.js & DB connection
 resource "aws_launch_template" "app" {
   name_prefix   = "app-template-"
-  image_id      = "ami-007855ac798b5175e" # Ubuntu 22.04 LTS AMI for us-east-1
+  image_id      = data.aws_ami.amazon_linux_2023.id
   instance_type = "t3.micro"
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2_profile.name
+  }
 
   network_interfaces {
     associate_public_ip_address = false
@@ -47,61 +54,38 @@ resource "aws_launch_template" "app" {
 
   user_data = base64encode(<<-EOF
               #!/bin/bash
-              curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-              sudo apt-get install -y nodejs git
+              sudo dnf update -y
+              sudo dnf install git -y
+              
+              # Setup Node.js 18 environment
+              curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
+              sudo dnf install nodejs -y
 
-              mkdir -p /var/www/node-app
-              cd /var/www/node-app
+              cd /home/ec2-user
+              git clone https://github.com/nerdusan/aws-three-tier-web-architecture-workshop.git aws-three-tier-web-architecture
 
-              cat << 'NODEAPP' > package.json
-              {
-                "name": "node-api",
-                "version": "1.0.0",
-                "main": "server.js",
-                "dependencies": {
-                  "express": "^4.18.2",
-                  "mysql2": "^3.6.0"
-                }
-              }
-              NODEAPP
+              # Navigate inside the app-tier folder based on the corrected repo path
+              cd /home/ec2-user/aws-three-tier-web-architecture/application-code/app-tier
 
-              cat << 'SERVER' > server.js
-              const express = require('express');
-              const mysql = require('mysql2');
-              const app = express();
-
-              const db = mysql.createConnection({
-                host: "${aws_rds_cluster.aurora.endpoint}", 
-                user: "${aws_rds_cluster.aurora.master_username}",
-                password: "SuperSecretPassword123!", 
-                database: "${aws_rds_cluster.aurora.database_name}"
-              });
-
-              app.get('/health', (req, res) => {
-                res.status(200).send('OK');
-              });
-
-              app.get('/api/data', (req, res) => {
-                db.query('SELECT "Hello from Aurora Multi-AZ MySQL" AS message', (err, results) => {
-                  if (err) return res.status(500).send(err);
-                  res.json(results);
-                });
-              });
-
-              app.listen(3000, () => console.log('App running on port 3000'));
-              SERVER
+              # Bind live Aurora environment parameters
+              export DB_HOST="${aws_rds_cluster.aurora.endpoint}"
+              export DB_USER="${aws_rds_cluster.aurora.master_username}"
+              export DB_PASSWORD="SuperSecretPassword123!"
+              export DB_NAME="${aws_rds_cluster.aurora.database_name}"
 
               npm install
               sudo npm install pm2 -g
-              pm2 start server.js
+              
+              # Execute background daemon mapping your configuration parameters
+              DB_HOST=$DB_HOST DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD DB_NAME=$DB_NAME pm2 start index.js --name "node-backend-api"
+              
               pm2 save
-              pm2 startup
+              sudo env PATH=$PATH:/usr/bin pm2 startup systemd -u ec2-user --hp /home/ec2-user
               EOF
   )
 }
-
-# App Tier Autoscaling Group
 resource "aws_autoscaling_group" "app" {
+  name                = "app-asg"
   desired_capacity    = 2
   max_size            = 4
   min_size            = 2

@@ -115,7 +115,23 @@ resource "aws_subnet" "db_2" {
   tags              = { Name = "db-private-1b" }
 }
 
-resource "aws_route_table_association" "web_1" { subnet_id = aws_subnet.web_1.id; route_table_id = aws_route_table.private.id }
-resource "aws_route_table_association" "web_2" { subnet_id = aws_subnet.web_2.id; route_table_id = aws_route_table.private.id }
-resource "aws_route_table_association" "app_1" { subnet_id = aws_subnet.app_1.id; route_table_id = aws_route_table.private.id }
-resource "aws_route_table_association" "app_2" { subnet_id = aws_subnet.app_2.id; route_table_id = aws_route_table.private.id }
+# Route Table Associations for Private Subnets
+resource "aws_route_table_association" "web_1" {
+  subnet_id      = aws_subnet.web_1.id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_route_table_association" "web_2" {
+  subnet_id      = aws_subnet.web_2.id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_route_table_association" "app_1" {
+  subnet_id      = aws_subnet.app_1.id
+  route_table_id = aws_route_table.private.id
+}
+
+resource "aws_route_table_association" "app_2" {
+  subnet_id      = aws_subnet.app_2.id
+  route_table_id = aws_route_table.private.id
+}
